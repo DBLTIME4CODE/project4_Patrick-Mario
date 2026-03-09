@@ -47,6 +47,9 @@ BUILD_DEPS: list[str] = [
     "cpio",
     "rsync",
     "gnupg",
+    "fakeroot",
+    "dpkg-dev",
+    "debhelper",
 ]
 
 KERNEL_ORG_BASE: str = "https://cdn.kernel.org/pub/linux/kernel"
