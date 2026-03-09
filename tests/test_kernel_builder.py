@@ -370,6 +370,16 @@ class TestConfigureKernel:
         mock_cmd.assert_called_once()
         assert mock_cmd.call_args[0][0] == ["make", "olddefconfig"]
 
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_same_file_no_error(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
+        """config_path == source_dir/.config must not raise SameFileError."""
+        dest = tmp_path / ".config"
+        dest.write_text("CONFIG_X86=y\n")
+        configure_kernel(tmp_path, dest)
+        # File should be unchanged
+        assert dest.read_text() == "CONFIG_X86=y\n"
+        mock_cmd.assert_called_once()
+
 
 # ===================================================================
 # compute_optimal_jobs

@@ -475,8 +475,12 @@ def configure_kernel(
 ) -> None:
     """Apply config and run ``make olddefconfig``."""
     if config_path is not None:
-        shutil.copy2(config_path, source_dir / ".config")
-        log.info("Copied config from %s", config_path)
+        dest = source_dir / ".config"
+        if config_path.resolve() != dest.resolve():
+            shutil.copy2(config_path, dest)
+            log.info("Copied config from %s", config_path)
+        else:
+            log.info("Config already at %s — skipping copy", dest)
     run_cmd(["make", "olddefconfig"], cwd=source_dir)
 
 
