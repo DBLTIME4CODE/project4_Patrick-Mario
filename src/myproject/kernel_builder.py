@@ -32,6 +32,7 @@ MAX_INPUT_LENGTH: int = 256
 MAX_RETRIES: int = 3
 
 SAFE_INPUT_RE: re.Pattern[str] = re.compile(r"^[0-9a-zA-Z.\-]+$")
+SAFE_KERNEL_VERSION_RE: re.Pattern[str] = re.compile(r"^[0-9a-zA-Z.\-+_]+$")
 
 BUILD_DEPS: list[str] = [
     "build-essential",
@@ -93,6 +94,26 @@ def validate_input(value: str, label: str = "input") -> str:
     if not SAFE_INPUT_RE.match(value):
         raise ValidationError(
             f"{label} contains invalid characters (allowed: 0-9 a-z A-Z . -): {value!r}"
+        )
+    return value
+
+
+def validate_kernel_version(value: str, label: str = "kernel version") -> str:
+    """Validate a kernel version from ``uname -r``.
+
+    Allows ``[0-9a-zA-Z.\\-+_]`` — slightly relaxed compared to
+    :func:`validate_input` because real kernel versions can contain
+    ``+`` (custom builds) and ``_`` (some distro suffixes).
+    """
+    if not value:
+        raise ValidationError(f"{label} must not be empty")
+    if "\x00" in value:
+        raise ValidationError(f"{label} contains null bytes")
+    if len(value) > MAX_INPUT_LENGTH:
+        raise ValidationError(f"{label} exceeds maximum length of {MAX_INPUT_LENGTH}")
+    if not SAFE_KERNEL_VERSION_RE.match(value):
+        raise ValidationError(
+            f"{label} contains invalid characters (allowed: 0-9 a-z A-Z . - + _): {value!r}"
         )
     return value
 
@@ -278,7 +299,7 @@ def compute_optimal_jobs() -> int:
 def extract_running_config(dest_dir: Path) -> Path:
     """Copy the running kernel config into *dest_dir*/.config."""
     version = get_running_kernel()
-    validate_input(version, "kernel version")
+    validate_kernel_version(version, "kernel version")
     boot_config = Path(f"/boot/config-{version}")
     proc_config = Path("/proc/config.gz")
     target = dest_dir / ".config"
@@ -475,7 +496,7 @@ def fetch_ubuntu_source(dest: Path) -> Path:
     """Fetch Ubuntu-patched kernel source."""
     dest.mkdir(parents=True, exist_ok=True)
     version = get_running_kernel()
-    validate_input(version, "kernel version")
+    validate_kernel_version(version, "kernel version")
 
     log.info("Fetching Ubuntu kernel source for %s", version)
     run_cmd(
@@ -506,6 +527,48 @@ def fetch_ubuntu_source(dest: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+_CERT_CONFIG_RE: re.Pattern[str] = re.compile(
+    r'^(CONFIG_SYSTEM_TRUSTED_KEYS|CONFIG_SYSTEM_REVOCATION_KEYS|CONFIG_MODULE_SIG_KEY)="(.+)"$'
+)
+
+
+def _sanitize_cert_configs(source_dir: Path) -> None:
+    """Clear cert/key config values that reference non-existent files.
+
+    Ubuntu kernels ship configs pointing at Canonical-internal ``.pem``
+    files (e.g. ``debian/canonical-certs.pem``).  These don't exist
+    outside Canonical's build environment, causing ``make bindeb-pkg``
+    to fail.  This function sets such entries to ``""`` so the build
+    can proceed.
+    """
+    config_file = source_dir / ".config"
+    if not config_file.exists():
+        return
+
+    lines = config_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    changed: list[str] = []
+    new_lines: list[str] = []
+
+    for line in lines:
+        m = _CERT_CONFIG_RE.match(line.rstrip("\n"))
+        if m:
+            key, value = m.group(1), m.group(2)
+            ref_path = source_dir / value
+            if not ref_path.exists():
+                ending = "\n" if line.endswith("\n") else ""
+                new_lines.append(f'{key}=""{ending}')
+                changed.append(f'{key}={value!r} -> ""')
+                continue
+        new_lines.append(line)
+
+    if changed:
+        config_file.write_text("".join(new_lines), encoding="utf-8")
+        for entry in changed:
+            log.info("Sanitized cert config: %s", entry)
+    else:
+        log.debug("No cert config entries needed sanitizing")
+
+
 def configure_kernel(
     source_dir: Path,
     config_path: Path | None = None,
@@ -519,6 +582,7 @@ def configure_kernel(
         else:
             log.info("Config already at %s — skipping copy", dest)
     run_cmd(["make", "olddefconfig"], cwd=source_dir)
+    _sanitize_cert_configs(source_dir)
 
 
 def _make_env() -> dict[str, str] | None:
@@ -594,7 +658,7 @@ def build_deb_package(
                 attempt,
                 MAX_RETRIES,
             )
-            install_packages(BUILD_DEPS + ["fakeroot"])
+            install_packages(BUILD_DEPS)
 
 
 def install_kernel(source_dir: Path) -> None:

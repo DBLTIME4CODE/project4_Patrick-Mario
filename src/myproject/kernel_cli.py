@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from myproject.kernel_builder import (
+    _sanitize_cert_configs,
     build_deb_package,
     build_kernel,
     check_flash_kernel,
@@ -68,8 +69,10 @@ def _handle_config_menu(source_dir: Path) -> None:
         configure_kernel(source_dir, config_path)
     elif choice == 1:
         run_cmd(["make", "defconfig"], cwd=source_dir)
+        _sanitize_cert_configs(source_dir)
     else:
         run_cmd(["make", "menuconfig"], cwd=source_dir)
+        _sanitize_cert_configs(source_dir)
 
 
 def _handle_signing(source_dir: Path) -> None:

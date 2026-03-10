@@ -220,6 +220,7 @@ User picks option 2
   +-- configure kernel
   |       +-- copy running config      <-- from /boot/config-*
   |       +-- make olddefconfig        <-- update for new source
+  |       +-- sanitize cert configs    <-- remove missing Canonical .pem refs
   |
   +-- build
   |       +-- compute jobs             <-- min(cpus, ram*2)
@@ -236,7 +237,7 @@ User picks option 2
 
 | Threat | Protection |
 |--------|-----------|
-| Command injection (`; rm -rf /`) | Whitelist: only `[0-9a-zA-Z.-]` |
+| Command injection (`; rm -rf /`) | Whitelist: only `[0-9a-zA-Z.-]` for user input; `[0-9a-zA-Z.-+_]` for system versions |
 | Shell injection | `subprocess.run()` list form, never `shell=True` |
 | Download from bad server | Domain allowlist: only `kernel.org` |
 | HTTP downgrade | Must be `https://` |
@@ -247,12 +248,13 @@ User picks option 2
 | Null byte injection | Explicit `\x00` check |
 | Oversized input | Max 256 characters |
 | Signing key exposure | `chmod 600` on private key |
+| Ubuntu cert build failure | Auto-clears `CONFIG_SYSTEM_TRUSTED_KEYS` / `CONFIG_SYSTEM_REVOCATION_KEYS` when `.pem` files missing |
 
 ---
 
 ## Part 5: The Tests
 
-79 tests that never run real commands. They use Python's `mock` to fake subprocess results:
+79 → **111** tests that never run real commands. They use Python's `mock` to fake subprocess results:
 
 ```python
 @patch("myproject.kernel_builder.run_cmd")
@@ -274,7 +276,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install pytest
 
 # Run
-pytest -q          # all 79 tests — no root, no network
+pytest -q          # all 111 tests — no root, no network
 ```
 
 No `pip install -e .` is required — `pyproject.toml` sets

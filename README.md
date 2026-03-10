@@ -14,10 +14,11 @@ All user interaction is driven by **numbered menus** — no flags to memorize. B
 | **Rebuild running kernel** | Detect your running kernel, pull its config from `/boot` or `/proc/config.gz`, rebuild from mainline source |
 | **Ubuntu kernel** | Fetch Ubuntu-patched source via `apt-get source` and build it |
 | **Install or package** | `make install` + `make modules_install`, or generate `.deb` packages with `make bindeb-pkg` |
-| **Input validation** | Strict `[0-9a-zA-Z.-]` whitelist on all user input — no injection possible |
+| **Input validation** | Strict `[0-9a-zA-Z.-]` whitelist on user input; relaxed `[0-9a-zA-Z.-+_]` for system-derived kernel versions (`uname -r`) — no injection possible |
 | **Locale** | Forces `en_US.UTF-8` to avoid encoding issues during builds |
 | **flash-kernel** | Checks for `flash-kernel` at startup (needed on ARM/embedded) |
 | **Kernel signing** | Optional — generate a signing key pair or use your own, signs via in-tree `scripts/sign-file` |
+| **Ubuntu cert fix** | Automatically disables `CONFIG_SYSTEM_TRUSTED_KEYS` and `CONFIG_SYSTEM_REVOCATION_KEYS` when Canonical's internal `.pem` files are missing — fixes the most common Ubuntu kernel build failure |
 | **Dependency auto-fix** | If compilation fails due to missing packages, it pauses, installs them via `apt-get`, and retries (up to 3 times) |
 | **Parallel builds** | Auto-calculates `make -j` based on `min(cpu_count, available_ram_gb * 2)` to prevent OOM kills |
 | **ccache** | Auto-detected — if installed, rebuilds go from hours to minutes |
@@ -232,7 +233,7 @@ src/myproject/
 └── __init__.py
 
 tests/
-└── test_kernel_builder.py   # 79 unit tests (all mocked — runs on
+└── test_kernel_builder.py   # 111 unit tests (all mocked — runs on
                              #   any OS)
 ```
 
@@ -246,7 +247,7 @@ pip install pytest ruff mypy
 PYTHONPATH=src pytest -q
 ```
 
-All 79 tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
+All 111 tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
 
 ---
 

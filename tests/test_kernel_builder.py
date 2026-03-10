@@ -22,6 +22,7 @@ from myproject.kernel_builder import (
     _kernel_sig_url,
     _kernel_url,
     _normalize_kernel_version,
+    _sanitize_cert_configs,
     build_deb_package,
     build_kernel,
     check_flash_kernel,
@@ -44,6 +45,7 @@ from myproject.kernel_builder import (
     setup_logging,
     sign_kernel,
     validate_input,
+    validate_kernel_version,
     validate_url_domain,
     verify_checksum,
     verify_gpg_signature,
@@ -102,6 +104,59 @@ class TestValidateInput:
     def test_is_valueerror_subclass(self) -> None:
         with pytest.raises(ValueError):
             validate_input("", "test")
+
+
+# ===================================================================
+# validate_kernel_version
+# ===================================================================
+
+
+class TestValidateKernelVersion:
+    """Relaxed pattern for uname-derived versions: [0-9a-zA-Z.\\-+_]."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "6.5.0-44-generic",
+            "6.5.0+custom",
+            "6.8.1",
+            "5.15.0-1024-azure",
+            "6.5.0_rc1",
+            "6.5.0+custom_build",
+            "A.B-C",
+        ],
+    )
+    def test_valid_uname_versions_accepted(self, value: str) -> None:
+        assert validate_kernel_version(value) == value
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValidationError, match="must not be empty"):
+            validate_kernel_version("")
+
+    def test_null_byte_raises(self) -> None:
+        with pytest.raises(ValidationError, match="null bytes"):
+            validate_kernel_version("6.5\x001")
+
+    def test_over_length_raises(self) -> None:
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            validate_kernel_version("a" * (MAX_INPUT_LENGTH + 1))
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "6.5;rm -rf /",
+            "`whoami`",
+            "../etc/passwd",
+            "ver$ION",
+            "a|b",
+            "a&b",
+            "foo\nbar",
+            "6.5 0",
+        ],
+    )
+    def test_dangerous_inputs_rejected(self, value: str) -> None:
+        with pytest.raises(ValidationError, match="invalid characters"):
+            validate_kernel_version(value)
 
 
 # ===================================================================
@@ -445,6 +500,69 @@ class TestConfigureKernel:
         # File should be unchanged
         assert dest.read_text() == "CONFIG_X86=y\n"
         mock_cmd.assert_called_once()
+
+
+# ===================================================================
+# _sanitize_cert_configs
+# ===================================================================
+
+
+class TestSanitizeCertConfigs:
+    def test_missing_certs_cleared(self, tmp_path: Path) -> None:
+        """Configs referencing non-existent cert files are set to empty."""
+        config = tmp_path / ".config"
+        config.write_text(
+            'CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"\n'
+            'CONFIG_SYSTEM_REVOCATION_KEYS="debian/canonical-revoked-certs.pem"\n'
+            'CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"\n'
+            "CONFIG_X86=y\n"
+        )
+        _sanitize_cert_configs(tmp_path)
+        result = config.read_text()
+        assert 'CONFIG_SYSTEM_TRUSTED_KEYS=""' in result
+        assert 'CONFIG_SYSTEM_REVOCATION_KEYS=""' in result
+        assert 'CONFIG_MODULE_SIG_KEY=""' in result
+        assert "CONFIG_X86=y" in result
+
+    def test_existing_certs_preserved(self, tmp_path: Path) -> None:
+        """Configs referencing files that DO exist are left alone."""
+        cert_dir = tmp_path / "debian"
+        cert_dir.mkdir()
+        (cert_dir / "canonical-certs.pem").write_text("cert")
+        config = tmp_path / ".config"
+        config.write_text('CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"\nCONFIG_X86=y\n')
+        _sanitize_cert_configs(tmp_path)
+        result = config.read_text()
+        assert 'CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"' in result
+
+    def test_already_empty_left_alone(self, tmp_path: Path) -> None:
+        """Configs already set to empty string are not changed."""
+        config = tmp_path / ".config"
+        original = 'CONFIG_SYSTEM_TRUSTED_KEYS=""\nCONFIG_SYSTEM_REVOCATION_KEYS=""\nCONFIG_X86=y\n'
+        config.write_text(original)
+        _sanitize_cert_configs(tmp_path)
+        assert config.read_text() == original
+
+    def test_non_cert_configs_untouched(self, tmp_path: Path) -> None:
+        """Non-cert config keys are never modified."""
+        config = tmp_path / ".config"
+        original = 'CONFIG_X86=y\nCONFIG_LOCALVERSION="-custom"\n# CONFIG_DEBUG_INFO is not set\n'
+        config.write_text(original)
+        _sanitize_cert_configs(tmp_path)
+        assert config.read_text() == original
+
+    def test_no_config_file_is_noop(self, tmp_path: Path) -> None:
+        """Gracefully does nothing when .config doesn't exist."""
+        _sanitize_cert_configs(tmp_path)  # should not raise
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_configure_kernel_calls_sanitize(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
+        """configure_kernel invokes _sanitize_cert_configs after olddefconfig."""
+        config = tmp_path / ".config"
+        config.write_text('CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"\n')
+        configure_kernel(tmp_path)
+        # After configure_kernel, the missing cert should be cleared
+        assert 'CONFIG_SYSTEM_TRUSTED_KEYS=""' in config.read_text()
 
 
 # ===================================================================
