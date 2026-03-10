@@ -64,6 +64,15 @@ ALLOWED_DOWNLOAD_DOMAINS: frozenset[str] = frozenset(
     }
 )
 
+# kernel.org release signing keys
+KERNEL_ORG_SIGNING_KEYS: tuple[str, ...] = (
+    "647F28654894E3BD457199BE38DBBDC86092693E",  # Greg Kroah-Hartman
+    "ABAF11C65A2970B130ABE3C479BE3E4300411886",  # Linus Torvalds
+)
+KERNEL_ORG_KEYSERVER: str = "hkps://keys.openpgp.org"
+
+_gpg_keys_imported: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -380,6 +389,36 @@ def verify_checksum(
     log.info("SHA-256 verified for %s", file_path.name)
 
 
+def _ensure_kernel_org_keys() -> bool:
+    """Import kernel.org GPG signing keys if not already imported this session."""
+    global _gpg_keys_imported  # noqa: PLW0603
+    if _gpg_keys_imported:
+        return True
+    log.info("Importing kernel.org signing keys from %s", KERNEL_ORG_KEYSERVER)
+    result = run_cmd(
+        [
+            "gpg",
+            "--keyserver",
+            KERNEL_ORG_KEYSERVER,
+            "--keyserver-options",
+            "timeout=10",
+            "--recv-keys",
+            *KERNEL_ORG_SIGNING_KEYS,
+        ],
+        check=False,
+        capture=True,
+    )
+    if result.returncode == 0:
+        _gpg_keys_imported = True
+        log.info("Kernel.org signing keys imported successfully")
+        return True
+    log.warning(
+        "Could not import kernel.org signing keys (keyserver may be down): %s",
+        result.stderr.strip() if result.stderr else "unknown error",
+    )
+    return False
+
+
 def verify_gpg_signature(
     file_path: Path,
     sig_path: Path,
@@ -468,16 +507,13 @@ def download_kernel(version: str, dest: Path) -> Path:
     )
     if sig_result.returncode == 0 and sig_path.exists():
         # kernel.org signs the uncompressed .tar, not .tar.xz
+        _ensure_kernel_org_keys()
         tar_path = tarball.with_suffix("")  # .tar.xz → .tar
         try:
             with lzma.open(tarball, "rb") as xz_f, open(tar_path, "wb") as tar_f:
                 shutil.copyfileobj(xz_f, tar_f)
             if not verify_gpg_signature(tar_path, sig_path):
-                log.warning(
-                    "GPG verification failed — continuing. "
-                    "Import kernel.org keys for full "
-                    "verification."
-                )
+                log.warning("GPG verification failed — continuing.")
         finally:
             tar_path.unlink(missing_ok=True)
     else:

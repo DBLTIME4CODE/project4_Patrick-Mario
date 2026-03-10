@@ -12,13 +12,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import myproject.kernel_builder as kb_module
 from myproject.kernel_builder import (
+    KERNEL_ORG_SIGNING_KEYS,
     MAX_INPUT_LENGTH,
     MAX_RETRIES,
     BuildError,
     ValidationError,
     _available_ram_gb,
     _cpu_count,
+    _ensure_kernel_org_keys,
     _kernel_sig_url,
     _kernel_url,
     _normalize_kernel_version,
@@ -844,6 +847,61 @@ class TestVerifyGpgSignature:
         f.touch()
         sig.touch()
         assert verify_gpg_signature(f, sig) is False
+
+
+# ===================================================================
+# _ensure_kernel_org_keys
+# ===================================================================
+
+
+class TestEnsureKernelOrgKeys:
+    """Tests for GPG key import helper."""
+
+    def setup_method(self) -> None:
+        """Reset the module-level import flag before each test."""
+        kb_module._gpg_keys_imported = False
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_success_imports_keys(self, mock_cmd: MagicMock) -> None:
+        mock_cmd.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        assert _ensure_kernel_org_keys() is True
+        assert kb_module._gpg_keys_imported is True
+        cmd_args = mock_cmd.call_args[0][0]
+        assert cmd_args[0] == "gpg"
+        assert "--recv-keys" in cmd_args
+        for key_id in KERNEL_ORG_SIGNING_KEYS:
+            assert key_id in cmd_args
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_failure_does_not_crash(self, mock_cmd: MagicMock) -> None:
+        mock_cmd.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stderr="keyserver unreachable",
+        )
+        assert _ensure_kernel_org_keys() is False
+        assert kb_module._gpg_keys_imported is False
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_only_calls_once_per_session(self, mock_cmd: MagicMock) -> None:
+        mock_cmd.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        assert _ensure_kernel_org_keys() is True
+        assert _ensure_kernel_org_keys() is True
+        mock_cmd.assert_called_once()
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_retries_after_failure(self, mock_cmd: MagicMock) -> None:
+        """A failed attempt should NOT set the flag, allowing retry."""
+        mock_cmd.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stderr="timeout",
+        )
+        assert _ensure_kernel_org_keys() is False
+        # Second attempt succeeds
+        mock_cmd.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        assert _ensure_kernel_org_keys() is True
+        assert mock_cmd.call_count == 2
 
 
 # ===================================================================
