@@ -221,6 +221,8 @@ User picks option 2
   |       +-- copy running config      <-- from /boot/config-*
   |       +-- make olddefconfig        <-- update for new source
   |       +-- sanitize cert configs    <-- remove missing Canonical .pem refs
+  |       +-- disable module signing   <-- if signing key was cleared
+  |       +-- make olddefconfig again  <-- resolve kconfig deps after changes
   |
   +-- build
   |       +-- compute jobs             <-- min(cpus, ram*2)
@@ -249,12 +251,14 @@ User picks option 2
 | Oversized input | Max 256 characters |
 | Signing key exposure | `chmod 600` on private key |
 | Ubuntu cert build failure | Auto-clears `CONFIG_SYSTEM_TRUSTED_KEYS` / `CONFIG_SYSTEM_REVOCATION_KEYS` when `.pem` files missing |
+| Module signing crash | Auto-disables `CONFIG_MODULE_SIG` / `CONFIG_MODULE_SIG_ALL` / `CONFIG_MODULE_SIG_FORCE` when signing key cleared |
+| GPG key management | Auto-imports kernel.org signing keys from `keyserver.ubuntu.com` — no manual `gpg --recv-keys` needed |
 
 ---
 
 ## Part 5: The Tests
 
-79 → **111** tests that never run real commands. They use Python's `mock` to fake subprocess results:
+**125** tests that never run real commands. They use Python's `mock` to fake subprocess results:
 
 ```python
 @patch("myproject.kernel_builder.run_cmd")
@@ -276,7 +280,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install pytest
 
 # Run
-pytest -q          # all 111 tests — no root, no network
+pytest -q          # all 125 tests — no root, no network
 ```
 
 No `pip install -e .` is required — `pyproject.toml` sets

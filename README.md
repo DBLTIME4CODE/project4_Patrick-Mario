@@ -22,7 +22,8 @@ All user interaction is driven by **numbered menus** — no flags to memorize. B
 | **Dependency auto-fix** | If compilation fails due to missing packages, it pauses, installs them via `apt-get`, and retries (up to 3 times) |
 | **Parallel builds** | Auto-calculates `make -j` based on `min(cpu_count, available_ram_gb * 2)` to prevent OOM kills |
 | **ccache** | Auto-detected — if installed, rebuilds go from hours to minutes |
-| **GPG verification** | Best-effort signature check on downloaded kernel tarballs |
+| **GPG verification** | Auto-imports kernel.org signing keys from `keyserver.ubuntu.com`, then verifies tarball signatures — no manual key setup needed |
+| **Module signing fix** | Automatically disables `CONFIG_MODULE_SIG` and `CONFIG_MODULE_SIG_FORCE` when the signing key is cleared — prevents `sign-file` SSL errors during `.deb` packaging |
 | **Safe extraction** | Tarball extraction validates every member path to prevent directory traversal attacks |
 | **SSRF protection** | Downloads are restricted to `kernel.org` domains only |
 
@@ -41,8 +42,8 @@ Build dependencies (`build-essential`, `flex`, `bison`, `libssl-dev`, `libelf-de
 ## Quick Start
 
 ```bash
-# 1. Install Python (if not already present)
-sudo apt update && sudo apt install -y python3
+# 1. Install Python and Git
+sudo apt update && sudo apt install -y python3 git
 
 # 2. Clone and run
 git clone https://github.com/DBLTIME4CODE/Repo4FriendLinuxTool.git
@@ -82,6 +83,8 @@ Redirect build output to a log file? [y/n]: n     ← stream to terminal
 Installing packages: build-essential, flex, bison, libssl-dev ...
 
 Downloading https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.3.tar.xz
+Importing kernel.org signing keys from hkps://keyserver.ubuntu.com
+GPG signature verified for linux-6.12.3.tar
 Extracting linux-6.12.3.tar.xz
 
 ============================================================
@@ -233,7 +236,7 @@ src/myproject/
 └── __init__.py
 
 tests/
-└── test_kernel_builder.py   # 111 unit tests (all mocked — runs on
+└── test_kernel_builder.py   # 125 unit tests (all mocked — runs on
                              #   any OS)
 ```
 
@@ -247,7 +250,7 @@ pip install pytest ruff mypy
 PYTHONPATH=src pytest -q
 ```
 
-All 111 tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
+All 125 tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
 
 ---
 
