@@ -388,6 +388,20 @@ class TestDownloadKernel:
 
     @patch("myproject.kernel_builder.safe_extract_tarball")
     @patch("myproject.kernel_builder.run_cmd")
+    def test_skips_extraction_when_source_dir_exists(
+        self,
+        mock_cmd: MagicMock,
+        mock_extract: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Second run should reuse existing source dir, not re-extract."""
+        (tmp_path / "linux-6.8.1").mkdir()
+        result = download_kernel("6.8.1", tmp_path)
+        assert result == tmp_path / "linux-6.8.1"
+        mock_extract.assert_not_called()
+
+    @patch("myproject.kernel_builder.safe_extract_tarball")
+    @patch("myproject.kernel_builder.run_cmd")
     def test_missing_source_dir_raises(
         self,
         mock_cmd: MagicMock,
@@ -504,6 +518,17 @@ class TestConfigureKernel:
         # File should be unchanged
         assert dest.read_text() == "CONFIG_X86=y\n"
         assert mock_cmd.call_count == 2  # olddefconfig runs twice (before + after sanitization)
+
+    @patch("myproject.kernel_builder.run_cmd")
+    def test_clean_runs_mrproper(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
+        """clean=True should run make mrproper before olddefconfig."""
+        config = tmp_path / "myconfig"
+        config.write_text("CONFIG_X86=y\n")
+        configure_kernel(tmp_path, config, clean=True)
+        calls = [c[0][0] for c in mock_cmd.call_args_list]
+        assert calls[0] == ["make", "mrproper"]
+        assert calls[1] == ["make", "olddefconfig"]
+        assert mock_cmd.call_count == 3  # mrproper + 2x olddefconfig
 
 
 # ===================================================================
@@ -1173,3 +1198,17 @@ class TestSetupLogging:
         log_path = tmp_path / "build.log"
         setup_logging(log_file=log_path, verbose=True)
         assert log_path.parent.exists()
+
+
+# ===================================================================
+# kernel_cli.main — KeyboardInterrupt
+# ===================================================================
+
+
+class TestCliKeyboardInterrupt:
+    @patch("myproject.kernel_cli._main_inner", side_effect=KeyboardInterrupt)
+    def test_ctrl_c_gives_clean_exit(self, mock_inner: MagicMock) -> None:
+        from myproject.kernel_cli import main
+
+        with pytest.raises(SystemExit, match="Interrupted"):
+            main()

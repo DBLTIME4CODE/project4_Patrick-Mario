@@ -54,8 +54,17 @@ def _prompt_log_preference() -> Path | None:
     return None
 
 
+def _should_clean(source_dir: Path) -> bool:
+    """Return True if source_dir has stale build artifacts and user wants a clean build."""
+    if (source_dir / ".config").exists() or (source_dir / "vmlinux").exists():
+        log.info("Previous build artifacts detected in %s", source_dir)
+        return prompt_yes_no("Clean stale build artifacts before reconfiguring (make mrproper)?")
+    return False
+
+
 def _handle_config_menu(source_dir: Path) -> None:
     """Sub-menu for kernel configuration strategy."""
+    clean = _should_clean(source_dir)
     choice = numbered_menu(
         "Kernel configuration",
         [
@@ -66,13 +75,21 @@ def _handle_config_menu(source_dir: Path) -> None:
     )
     if choice == 0:
         config_path = extract_running_config(source_dir)
-        configure_kernel(source_dir, config_path)
+        configure_kernel(source_dir, config_path, clean=clean)
     elif choice == 1:
+        if clean:
+            log.info("Cleaning stale build artifacts (make mrproper) ...")
+            run_cmd(["make", "mrproper"], cwd=source_dir)
         run_cmd(["make", "defconfig"], cwd=source_dir)
         _sanitize_cert_configs(source_dir)
+        run_cmd(["make", "olddefconfig"], cwd=source_dir)
     else:
+        if clean:
+            log.info("Cleaning stale build artifacts (make mrproper) ...")
+            run_cmd(["make", "mrproper"], cwd=source_dir)
         run_cmd(["make", "menuconfig"], cwd=source_dir)
         _sanitize_cert_configs(source_dir)
+        run_cmd(["make", "olddefconfig"], cwd=source_dir)
 
 
 def _handle_signing(source_dir: Path) -> None:
@@ -133,6 +150,10 @@ def main() -> None:
         _main_inner()
     except EOFError:
         raise SystemExit("EOF received \u2014 aborting") from None
+    except KeyboardInterrupt:
+        raise SystemExit(
+            "\nInterrupted \u2014 partial build artifacts may remain in the build directory"
+        ) from None
 
 
 def _main_inner() -> None:
@@ -183,14 +204,16 @@ def _main_inner() -> None:
         version = get_running_kernel()
         base = version.split("-")[0]
         source_dir = download_kernel(base, build_dir)
+        clean = _should_clean(source_dir)
         config_path = extract_running_config(source_dir)
-        configure_kernel(source_dir, config_path)
+        configure_kernel(source_dir, config_path, clean=clean)
 
     elif choice == 3:
         # Ubuntu-patched kernel
         source_dir = fetch_ubuntu_source(build_dir)
+        clean = _should_clean(source_dir)
         config_path = extract_running_config(source_dir)
-        configure_kernel(source_dir, config_path)
+        configure_kernel(source_dir, config_path, clean=clean)
 
     else:
         return

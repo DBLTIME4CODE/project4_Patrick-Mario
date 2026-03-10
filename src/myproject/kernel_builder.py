@@ -544,7 +544,7 @@ def download_kernel(version: str, dest: Path) -> Path:
         tar_path = tarball.with_suffix("")  # .tar.xz → .tar
         try:
             with lzma.open(tarball, "rb") as xz_f, open(tar_path, "wb") as tar_f:
-                shutil.copyfileobj(xz_f, tar_f)
+                shutil.copyfileobj(xz_f, tar_f, length=1024 * 1024)
             if not verify_gpg_signature(tar_path, sig_path):
                 log.warning("GPG verification failed — continuing.")
         finally:
@@ -552,12 +552,17 @@ def download_kernel(version: str, dest: Path) -> Path:
     else:
         log.info("No GPG signature available — skipping")
 
-    log.info("Extracting %s", tarball.name)
-    safe_extract_tarball(tarball, dest)
-
     source_dir = dest / f"linux-{normalized}"
-    if not source_dir.is_dir():
-        raise FileNotFoundError(f"Expected source directory not found: {source_dir}")
+    if source_dir.is_dir():
+        log.info(
+            "Source directory %s already exists — skipping extraction",
+            source_dir,
+        )
+    else:
+        log.info("Extracting %s", tarball.name)
+        safe_extract_tarball(tarball, dest)
+        if not source_dir.is_dir():
+            raise FileNotFoundError(f"Expected source directory not found: {source_dir}")
     return source_dir
 
 
@@ -664,8 +669,20 @@ def _sanitize_cert_configs(source_dir: Path) -> None:
 def configure_kernel(
     source_dir: Path,
     config_path: Path | None = None,
+    *,
+    clean: bool = False,
 ) -> None:
-    """Apply config and run ``make olddefconfig``."""
+    """Apply config and run ``make olddefconfig``.
+
+    Parameters
+    ----------
+    clean:
+        Run ``make mrproper`` first to remove stale build artifacts.
+        Recommended when reusing a previously-built source tree.
+    """
+    if clean:
+        log.info("Cleaning stale build artifacts (make mrproper) ...")
+        run_cmd(["make", "mrproper"], cwd=source_dir)
     if config_path is not None:
         dest = source_dir / ".config"
         if config_path.resolve() != dest.resolve():
