@@ -159,7 +159,8 @@ class TestIsMounted:
 class TestMountFilesystems:
     @patch("myproject.chroot_build.run_cmd")
     def test_mounts_all_expected(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
-        mounted = _mount_filesystems(tmp_path)
+        mounted: list[Path] = []
+        _mount_filesystems(tmp_path, mounted)
         assert len(mounted) == len(CHROOT_MOUNT_POINTS)
         assert mock_cmd.call_count == len(CHROOT_MOUNT_POINTS)
 
@@ -222,36 +223,42 @@ class TestManagedMounts:
     def test_unmounts_on_success(
         self, mock_mount: MagicMock, mock_unmount: MagicMock, tmp_path: Path
     ) -> None:
-        sentinel = [tmp_path / "proc"]
-        mock_mount.return_value = sentinel
+        sentinel_paths = [tmp_path / "proc"]
+        mock_mount.side_effect = lambda _chroot, mounts: mounts.extend(sentinel_paths)
         with managed_mounts(tmp_path) as mounted:
-            assert mounted is sentinel
-        mock_unmount.assert_called_once_with(sentinel)
+            assert mounted == sentinel_paths
+        mock_unmount.assert_called_once_with(sentinel_paths)
 
     @patch("myproject.chroot_build._unmount_filesystems")
     @patch("myproject.chroot_build._mount_filesystems")
     def test_unmounts_on_exception(
         self, mock_mount: MagicMock, mock_unmount: MagicMock, tmp_path: Path
     ) -> None:
-        sentinel = [tmp_path / "proc"]
-        mock_mount.return_value = sentinel
+        sentinel_paths = [tmp_path / "proc"]
+        mock_mount.side_effect = lambda _chroot, mounts: mounts.extend(sentinel_paths)
         with pytest.raises(RuntimeError, match="boom"):
             with managed_mounts(tmp_path):
                 raise RuntimeError("boom")
-        mock_unmount.assert_called_once_with(sentinel)
+        mock_unmount.assert_called_once_with(sentinel_paths)
 
     @patch("myproject.chroot_build._unmount_filesystems")
     @patch("myproject.chroot_build._mount_filesystems")
     def test_cleanup_even_if_mount_partial(
         self, mock_mount: MagicMock, mock_unmount: MagicMock, tmp_path: Path
     ) -> None:
-        """If _mount_filesystems raises, mounted list is still empty but cleanup runs."""
-        mock_mount.side_effect = subprocess.CalledProcessError(1, "mount")
+        """If _mount_filesystems raises mid-way, partial mounts are still cleaned up."""
+        partial = [tmp_path / "proc"]
+
+        def partial_mount(_chroot: Path, mounts: list[Path]) -> None:
+            mounts.extend(partial)
+            raise subprocess.CalledProcessError(1, "mount")
+
+        mock_mount.side_effect = partial_mount
         with pytest.raises(subprocess.CalledProcessError):
             with managed_mounts(tmp_path):
                 pass  # pragma: no cover
-        # Cleanup called with empty list (mount failed before populating)
-        mock_unmount.assert_called_once_with([])
+        # Cleanup called with the partial list — proc was mounted before failure
+        mock_unmount.assert_called_once_with(partial)
 
 
 # ===================================================================
@@ -286,6 +293,15 @@ class TestCreateChroot:
         with pytest.raises(ValidationError, match="must use http"):
             create_chroot(tmp_path, mirror="ftp://bad.example.com")
 
+    @patch("myproject.chroot_build.run_cmd")
+    def test_skips_if_already_exists(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
+        """Debootstrap is skipped when the chroot already has /bin/sh."""
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "sh").write_text("")
+        result = create_chroot(tmp_path)
+        assert result == tmp_path.resolve()
+        mock_cmd.assert_not_called()
+
 
 # ===================================================================
 # install_build_deps
@@ -314,6 +330,7 @@ class TestInstallBuildDeps:
             "apt-get",
         ]
         assert "-y" in install_cmd
+        assert "--no-install-recommends" in install_cmd
         # All build deps + extra packages should be in the command
         for pkg in CHROOT_EXTRA_PACKAGES:
             assert pkg in install_cmd
@@ -373,10 +390,14 @@ class TestRunChrootBuild:
         mock_cmd.assert_called_once()
         cmd = mock_cmd.call_args[0][0]
         assert cmd[:3] == ["sudo", "chroot", str(chroot.resolve())]
+        assert "env" in cmd
         assert "make" in cmd
         assert "-C" in cmd
         assert "-j4" in cmd
         assert "bindeb-pkg" in cmd
+        # ccache PATH and MAKEFLAGS propagated
+        assert any("ccache" in arg for arg in cmd)
+        assert "MAKEFLAGS=-j4" in cmd
 
     @patch("myproject.chroot_build.run_cmd")
     def test_custom_jobs(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
@@ -441,8 +462,11 @@ class TestExtractArtifacts:
 
 
 class TestTeardownChroot:
+    @patch("myproject.chroot_build._is_mounted", return_value=True)
     @patch("myproject.chroot_build.run_cmd")
-    def test_unmounts_expected_paths(self, mock_cmd: MagicMock, tmp_path: Path) -> None:
+    def test_unmounts_expected_paths(
+        self, mock_cmd: MagicMock, mock_mounted: MagicMock, tmp_path: Path
+    ) -> None:
         chroot = tmp_path / "chroot"
         # Create the mount point dirs so teardown finds them
         for _, _, target in CHROOT_MOUNT_POINTS:
@@ -497,7 +521,8 @@ class TestTeardownChroot:
         rm_calls = [c for c in mock_cmd.call_args_list if "rm" in c[0][0]]
         assert len(rm_calls) == 0
 
-    def test_remove_shallow_path_rejected(self) -> None:
+    @patch("myproject.chroot_build._is_mounted", return_value=False)
+    def test_remove_shallow_path_rejected(self, mock_mounted: MagicMock) -> None:
         """Shallow paths must be rejected for rm -rf."""
         with pytest.raises(ValidationError, match="path depth"):
             teardown_chroot(Path("/tmp/chroot"), remove=True)

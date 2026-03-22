@@ -40,12 +40,15 @@ DEFAULT_SUITE: str = "bookworm"
 DEFAULT_MIRROR: str = "http://deb.debian.org/debian"
 
 # Additional packages needed inside chroot beyond BUILD_DEPS
-CHROOT_EXTRA_PACKAGES: list[str] = ["locales", "sudo"]
+CHROOT_EXTRA_PACKAGES: list[str] = ["ccache", "locales", "sudo"]
 
 _MIN_CHROOT_DEPTH: int = 3
 """Minimum path depth for rm -rf safety (e.g. /tmp/myproject/chroot)."""
 
 _SAFE_GLOB_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.*?\-\[\]]+$")
+
+_CHROOT_PATH: str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+"""Standard PATH inside a minimal Debian chroot."""
 
 
 # ---------------------------------------------------------------------------
@@ -110,19 +113,18 @@ def _is_mounted(path: Path) -> bool:
     return result.returncode == 0
 
 
-def _mount_filesystems(chroot_dir: Path) -> list[Path]:
+def _mount_filesystems(chroot_dir: Path, mounted: list[Path]) -> None:
     """Mount /proc, /sys, /dev inside the chroot.
 
-    Returns the list of mounted paths (in mount order) for later cleanup.
+    Appends mounted paths to *mounted* **in-place** so that partial mounts
+    are tracked even if this function raises mid-way.
     """
-    mounted: list[Path] = []
     for fs_type, source, target in CHROOT_MOUNT_POINTS:
         mount_path = chroot_dir / target.lstrip("/")
         mount_path.mkdir(parents=True, exist_ok=True)
         log.info("Mounting %s at %s", fs_type, mount_path)
         run_cmd(["sudo", "mount", "-t", fs_type, source, str(mount_path)])
         mounted.append(mount_path)
-    return mounted
 
 
 def _unmount_filesystems(mounted: list[Path]) -> None:
@@ -163,7 +165,7 @@ def managed_mounts(chroot_dir: Path) -> Generator[list[Path], None, None]:
     """Context manager that mounts and guarantees cleanup of chroot filesystems."""
     mounted: list[Path] = []
     try:
-        mounted = _mount_filesystems(chroot_dir)
+        _mount_filesystems(chroot_dir, mounted)
         yield mounted
     finally:
         _unmount_filesystems(mounted)
@@ -201,6 +203,12 @@ def create_chroot(
     validate_mirror(mirror)
 
     chroot_dir = chroot_dir.resolve()
+
+    # Skip debootstrap if chroot already contains a usable rootfs
+    if (chroot_dir / "bin" / "sh").exists():
+        log.info("Chroot already exists at %s — skipping debootstrap", chroot_dir)
+        return chroot_dir
+
     chroot_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Creating chroot at %s (suite=%s, mirror=%s)", chroot_dir, suite, mirror)
@@ -243,6 +251,7 @@ def install_build_deps(chroot_dir: Path) -> None:
             "install",
             "-y",
             "-qq",
+            "--no-install-recommends",
             *packages,
         ]
     )
@@ -270,13 +279,18 @@ def copy_source_into_chroot(
 
     build_dir = chroot_dir / "build"
     dest = build_dir / source_dir.name
-    if dest.exists():
-        log.info("Source already present at %s — removing for fresh copy", dest)
-        shutil.rmtree(dest)
-
     build_dir.mkdir(parents=True, exist_ok=True)
-    log.info("Copying kernel source %s -> %s", source_dir, dest)
-    shutil.copytree(source_dir, dest, symlinks=True)
+
+    if shutil.which("rsync"):
+        log.info("Syncing kernel source %s -> %s (rsync)", source_dir, dest)
+        run_cmd(["rsync", "-a", "--delete", f"{source_dir}/", f"{dest}/"])
+    else:
+        if dest.exists():
+            log.info("Removing stale source at %s", dest)
+            shutil.rmtree(dest)
+        log.info("Copying kernel source %s -> %s (shutil)", source_dir, dest)
+        shutil.copytree(source_dir, dest, symlinks=True)
+
     log.info("Kernel source copied into chroot")
     return dest
 
@@ -325,6 +339,9 @@ def run_chroot_build(
             "sudo",
             "chroot",
             str(chroot_dir),
+            "env",
+            f"PATH=/usr/lib/ccache:{_CHROOT_PATH}",
+            f"MAKEFLAGS=-j{j}",
             "make",
             "-C",
             str(inner_path),
@@ -390,11 +407,11 @@ def teardown_chroot(chroot_dir: Path, *, remove: bool = False) -> None:
     """
     chroot_dir = chroot_dir.resolve()
 
-    # Build list of expected mount points and unmount any that are still active
+    # Build list of mount points that are still actively mounted
     expected_mounts: list[Path] = []
     for _fs_type, _source, target in CHROOT_MOUNT_POINTS:
         mount_path = chroot_dir / target.lstrip("/")
-        if mount_path.exists():
+        if _is_mounted(mount_path):
             expected_mounts.append(mount_path)
 
     if expected_mounts:
