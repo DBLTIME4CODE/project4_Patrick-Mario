@@ -233,11 +233,138 @@ src/myproject/
 ├── kernel_builder.py        # Core engine — validation, download,
 │                            #   build, install, signing
 ├── kernel_cli.py            # Interactive numbered-menu CLI
+├── chroot_build.py          # Clean chroot compilation module
 └── __init__.py
 
 tests/
-└── test_kernel_builder.py   # 125 unit tests (all mocked — runs on
-                             #   any OS)
+├── test_kernel_builder.py   # 125 unit tests (kernel builder)
+└── test_chroot_build.py     # 62 unit tests (chroot build)
+```
+
+---
+
+## Clean Chroot Compilation
+
+The `chroot_build` module provides an **isolated build environment** using `debootstrap`. This ensures your host system is never contaminated by build dependencies, and every build is reproducible from scratch.
+
+### Why Use a Chroot?
+
+| Problem | Solution |
+|---------|----------|
+| Build deps pollute your host system | All packages install inside a disposable chroot |
+| "Works on my machine" — host-specific libs leak in | Chroot starts from a minimal base image |
+| Stale object files from previous builds | Fresh chroot = clean slate every time |
+| Debugging "did I break my system?" after a bad build | Host is untouched — just delete the chroot |
+
+### How It Works
+
+The `chroot_kernel_build()` orchestrator runs this pipeline:
+
+```
+1. debootstrap        Create minimal Debian/Ubuntu chroot
+         ↓
+2. mount /proc,       Mount virtual filesystems for build
+   /sys, /dev         compatibility
+         ↓
+3. apt-get install    Install build-essential, flex, bison,
+                      libssl-dev, etc. inside the chroot
+         ↓
+4. copytree           Copy your kernel source tree into
+                      <chroot>/build/
+         ↓
+5. chroot make        Run `make -C /build/linux-X.Y.Z
+   bindeb-pkg         -jN bindeb-pkg` inside the chroot
+         ↓
+6. copy .deb          Extract the resulting .deb packages
+   artifacts          to your output directory
+         ↓
+7. teardown           Unmount filesystems, optionally
+                      delete the chroot
+```
+
+### Quick Start (Programmatic)
+
+```python
+from pathlib import Path
+from myproject.chroot_build import chroot_kernel_build
+
+# Build kernel 6.8.1 in a clean Debian bookworm chroot
+artifacts = chroot_kernel_build(
+    source_dir=Path("/home/user/kernel-build/linux-6.8.1"),
+    output_dir=Path("/home/user/kernel-debs"),
+    suite="bookworm",                    # or "jammy" for Ubuntu
+    mirror="http://deb.debian.org/debian",
+    jobs=8,
+    cleanup=True,                        # delete chroot when done
+)
+
+# artifacts = [Path("/home/user/kernel-debs/linux-image-6.8.1_amd64.deb"), ...]
+for deb in artifacts:
+    print(f"Built: {deb}")
+```
+
+### Step-by-Step (Individual Functions)
+
+```python
+from pathlib import Path
+from myproject.chroot_build import (
+    create_chroot,
+    install_build_deps,
+    copy_source_into_chroot,
+    run_chroot_build,
+    extract_artifacts,
+    teardown_chroot,
+    managed_mounts,
+)
+
+chroot = Path("/tmp/myproject/chroot")
+
+# 1. Create chroot
+create_chroot(chroot, suite="bookworm")
+
+# 2. Mount + build inside context manager (guarantees cleanup)
+with managed_mounts(chroot):
+    install_build_deps(chroot)
+    src = copy_source_into_chroot(Path("~/linux-6.8.1"), chroot)
+    run_chroot_build(chroot, src, jobs=4)
+    debs = extract_artifacts(chroot, Path("~/output"))
+
+# 3. Cleanup
+teardown_chroot(chroot, remove=True)
+```
+
+### Safety Features
+
+| Feature | Detail |
+|---------|--------|
+| **No `shell=True`** | Every subprocess call uses list-form arguments — zero injection surface |
+| **Standard unmount first** | Tries `umount` before falling back to `umount -l` (lazy) — prevents rm-rf race with still-mounted host filesystems |
+| **Mount verification before rm** | Checks `mountpoint -q` on every mount point before allowing `rm -rf` — refuses to delete if any mount is still active |
+| **Path depth guard** | Will not `rm -rf` paths less than 3 levels deep (blocks accidental `rm -rf /var`) |
+| **Glob validation** | Rejects recursive `**` patterns and shell metacharacters in artifact search |
+| **Input validation** | Suite names and mirror URLs are validated before reaching `sudo` commands |
+| **Context manager cleanup** | `managed_mounts()` guarantees unmount even if the build crashes mid-way |
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `suite` | `"bookworm"` | Debian/Ubuntu release codename |
+| `mirror` | `"http://deb.debian.org/debian"` | APT mirror URL (http or https) |
+| `jobs` | Auto-detected | Parallel make jobs (`min(cpus, ram_gb * 2)`) |
+| `cleanup` | `True` | Delete chroot after build |
+| `chroot_dir` | `output_dir/.chroot` | Where to create the chroot |
+
+### Requirements
+
+- **Linux** (Debian/Ubuntu) — needs `debootstrap`, `sudo`, `mount`, `mountpoint`
+- **Python 3.10+**
+- **Root access** via `sudo`
+
+Install `debootstrap` if not present:
+
+```bash
+sudo apt-get install -y debootstrap
 ```
 
 ---
@@ -250,7 +377,7 @@ pip install pytest ruff mypy
 PYTHONPATH=src pytest -q
 ```
 
-All 125 tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
+All tests pass. They mock every subprocess call, so they run on Linux, macOS, and Windows without needing root or a network.
 
 ---
 
