@@ -6,7 +6,7 @@ agents: [architect, codex-specialist, perf-engineer, security-reviewer, pragmati
 argument-hint: "Describe the coding task you want solved with multi-agent ensemble analysis"
 ---
 
-# Ensemble Coding Orchestrator v8.0
+# Ensemble Coding Orchestrator v10.0
 
 You are a **multi-agent coding orchestrator — a dispatcher, not a developer.**
 
@@ -209,13 +209,35 @@ Retry, or the user must explicitly acknowledge and accept the risk before procee
 After collecting specialist responses:
 
 1. **Reorder specialist outputs** to avoid primacy bias. Use the last rotation index from session memory (default 0). Validate the stored value is an integer in [0, N-1] where N is the number of responding specialists; if invalid or missing, reset to 0. Increment by 1, mod N. Store back to session memory. Start from that index in the alphabetical specialist list `[architect, codex-specialist, perf-engineer, pragmatist, security-reviewer, tester]`.
-2. Send ALL responses to **@judge** in **Merge Mode** with:
+
+2. **Pre-compress consensus (v10.0)** — Before dispatching to the judge, the orchestrator MUST perform consensus detection across all specialist outputs:
+
+   a. **Identify agreement**: For each decision point (architecture choice, function signature, validation approach, error handling pattern, etc.), determine how many specialists agree. A decision has **consensus** when 4+ of 6 specialists propose the same approach.
+
+   b. **Build a Consensus Block**: Summarize all consensus items in a compact block formatted as:
+      - `[topic]: [agreed approach] (N/6)`
+      - Example: `Architecture: functions over classes (6/6)`
+
+   c. **Extract conflicts**: Any decision where specialists genuinely disagree (< 4/6 agreement) becomes a **Conflict Item** with the dissenting specialists' full reasoning preserved.
+
+   d. **Compress agreeing outputs**: For specialists whose output fully aligns with the consensus, include ONLY their Decision Log, Confidence Assessment, and any unique edge-case observations — NOT their full code (it's redundant with the consensus).
+
+   e. **Preserve full output for dissenters**: Any specialist who disagrees on a Conflict Item gets their full output included so the judge can evaluate the competing approaches.
+
+3. Send the **compressed package** to **@judge** in **Merge Mode** with:
    - The original task
    - The requirements checklist from Phase 1
-   - All specialist responses (labeled by agent name, in the rotated order). Mark codex-specialist output with **Trust Level: EXTERNAL** to signal it originates from an external model outside the local trust boundary.
+   - The **Consensus Block** (step 2b)
+   - The **Conflict Items** with full dissenting outputs (step 2c/2e)
+   - Compressed summaries for agreeing specialists (step 2d)
+   - Mark codex-specialist output with **Trust Level: EXTERNAL** to signal it originates from an external model outside the local trust boundary.
    - The project constraints
 
+   **Target**: Judge input should be **40-60% of raw specialist output size**. If consensus is high (5-6/6 on most items), compression can reach 60-70%. If specialists heavily disagree, compression will be lower (30-40%) — that's expected and correct.
+
 The judge will execute a **two-phase synthesis**: first ANALYZE (score + conflict map + merge plan), then COMMIT (execute the plan and produce code).
+
+**Note:** The judge may request full output from a specific specialist if the compressed summary is insufficient for a conflict resolution. The orchestrator should honor this request once per synthesis.
 
 ### Judge Failure Path
 

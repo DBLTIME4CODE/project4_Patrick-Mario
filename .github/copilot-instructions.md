@@ -1,6 +1,6 @@
 # Copilot Instructions for This Repository
 
-## Ensemble Pipeline Mandate (v8.0)
+## Ensemble Pipeline Mandate (v10.0)
 - **ALL coding tasks (code creation, modification, or deletion) MUST go through the full ensemble pipeline (ALL 6 specialists → judge → triple QC gate). No exceptions. No reduced dispatch.**
 - The ensemble agent is PROHIBITED from writing code solo or skipping any specialist.
 - Only non-coding responses (questions, explanations, config lookups) may skip the pipeline.
