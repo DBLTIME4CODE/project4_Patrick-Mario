@@ -46,8 +46,8 @@ Build dependencies (`build-essential`, `flex`, `bison`, `libssl-dev`, `libelf-de
 sudo apt update && sudo apt install -y python3 git
 
 # 2. Clone and run
-git clone https://github.com/DBLTIME4CODE/Repo4FriendLinuxTool.git
-cd Repo4FriendLinuxTool
+git clone https://github.com/DBLTIME4CODE/project4_Patrick-Mario.git
+cd project4_Patrick-Mario
 chmod +x run.sh
 ./run.sh
 ```
